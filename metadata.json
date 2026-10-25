@@ -1,0 +1,6 @@
+{
+  "name": "Clip AI — Video Analysis & Viral Clipping Engine",
+  "description": "AI-powered YouTube Shorts strategist and viral clipping engine. Analyzes full video transcripts, scores viral retention potential, reframes to 9:16, generates animated captions, titles, descriptions, and cover concepts.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
