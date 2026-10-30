@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type ActiveAppPage = 'downloader' | 'studio' | 'editor';
+export type ActiveAppPage = 'downloader' | 'studio' | 'editor' | 'chat';
 
 interface HeaderProps {
   activePage: ActiveAppPage;
@@ -78,22 +78,30 @@ export const Header: React.FC<HeaderProps> = ({
             CapCut AI Editor
           </a>
           <a
-            href="#history"
-            className="hover:text-white transition-colors whitespace-nowrap shrink-0"
+            href="#google-chat"
+            onClick={(e) => {
+              e.preventDefault();
+              onSelectPage('chat');
+            }}
+            className={`transition-colors whitespace-nowrap shrink-0 ${
+              activePage === 'chat'
+                ? 'text-white underline underline-offset-8 decoration-amber-400'
+                : 'hover:text-white'
+            }`}
           >
-            Recent Downloads {downloadCount > 0 ? `(${downloadCount})` : ''}
+            Google Chat {downloadCount > 0 ? `(${downloadCount})` : ''}
           </a>
         </nav>
 
         {/* Zone 3: 1 Primary Action */}
         <div className="flex items-center shrink-0">
-          {activePage !== 'editor' ? (
+          {activePage !== 'chat' ? (
             <button
               type="button"
-              onClick={() => onSelectPage('editor')}
+              onClick={() => onSelectPage('chat')}
               className="px-4 py-2 text-xs font-semibold text-slate-950 bg-amber-400 hover:bg-amber-300 rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              Open CapCut AI Editor
+              Open Google Chat
             </button>
           ) : (
             <button

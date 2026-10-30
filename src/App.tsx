@@ -11,6 +11,7 @@ import { VideoInputBar } from './components/VideoInputBar';
 import { ReelGrabPlayer, DownloadedVideoRecord } from './components/ReelGrabPlayer';
 import { DualVideoStudioPage } from './components/DualVideoStudioPage';
 import { CapCutEditorPage } from './components/CapCutEditorPage';
+import { GoogleChatPage } from './components/GoogleChatPage';
 import {
   Download,
   Trash2,
@@ -22,6 +23,7 @@ import {
   AlertTriangle,
   Wand2,
   Scissors,
+  MessageSquare,
 } from 'lucide-react';
 
 export default function App() {
@@ -30,6 +32,7 @@ export default function App() {
     const pageParam = params.get('page');
     if (pageParam === 'studio') return 'studio';
     if (pageParam === 'editor') return 'editor';
+    if (pageParam === 'chat') return 'chat';
     return 'downloader';
   });
   const [currentUrl, setCurrentUrl] = useState<string>(SAMPLE_REEL_URLS[0].url);
@@ -211,6 +214,21 @@ export default function App() {
               <Scissors className="h-4 w-4" />
               <span>Page 3 · AI CapCut Video Editor</span>
             </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activePage === 'chat'}
+              onClick={() => setActivePage('chat')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                activePage === 'chat'
+                  ? 'bg-amber-400 text-slate-950'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <MessageSquare className="h-4 w-4" />
+              <span>Page 4 · Google Chat Hub</span>
+            </button>
           </div>
         </div>
 
@@ -238,11 +256,17 @@ export default function App() {
             recentDownloads={downloadHistory}
             onDownloadComplete={handleDownloadComplete}
           />
-        ) : (
+        ) : activePage === 'editor' ? (
           /* Page 3: AI CapCut Timeline & Effect Video Editor */
           <CapCutEditorPage
             recentDownloads={downloadHistory}
             onDownloadComplete={handleDownloadComplete}
+          />
+        ) : (
+          /* Page 4: Google Chat Video Collaboration Hub */
+          <GoogleChatPage
+            recentDownloads={downloadHistory}
+            currentVideoInfo={parsedVideoInfo}
           />
         )}
 
