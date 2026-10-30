@@ -18,6 +18,11 @@ import {
   Film,
   Wand2,
   Layers,
+  Zap,
+  FlipHorizontal,
+  RotateCw,
+  Maximize2,
+  Music,
 } from 'lucide-react';
 import { SAMPLE_REEL_URLS } from '../utils/urlParser';
 import { fetchAndSaveMp4 } from '../utils/videoDownloader';
@@ -25,14 +30,26 @@ import { DownloadedVideoRecord } from './ReelGrabPlayer';
 import {
   CapCutEditState,
   CapCutAiEditSuggestion,
+  CapCutTimelineSegment,
   CAPCUT_FILTER_PRESETS,
+  CAPCUT_VFX_PRESETS,
+  CAPCUT_ANIMATION_PRESETS,
+  CAPCUT_STICKER_PRESETS,
+  CAPCUT_CANVAS_BG_PRESETS,
   CAPCUT_SPEED_OPTIONS,
   CAPTION_STYLE_PRESETS,
   clampTrimRange,
   calculateEditedDuration,
   buildCssPreviewFilter,
+  buildCanvasTransformStyle,
+  getActiveTimedCaption,
+  buildDefaultTimedCaptions,
   normalizeAiEditorSuggestion,
   CapCutFilterId,
+  CapCutVfxId,
+  CapCutAnimationId,
+  CapCutStickerId,
+  CapCutCanvasBgId,
   CapCutSpeedOption,
   CapCutCanvasRatio,
   CapCutCaptionPosition,
@@ -69,7 +86,7 @@ interface ExportedEditorVideo {
   downloadUrl: string;
 }
 
-type EditorToolTab = 'ai' | 'trim' | 'text' | 'filters' | 'speed';
+type EditorToolTab = 'vfx' | 'ai' | 'text' | 'filters' | 'transform' | 'speed';
 
 interface CapCutEditorPageProps {
   recentDownloads: DownloadedVideoRecord[];
@@ -82,25 +99,47 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
 }) => {
   const [sourceClip, setSourceClip] = useState<LoadedEditorClip | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [activeTab, setActiveTab] = useState<EditorToolTab>('ai');
+  const [activeTab, setActiveTab] = useState<EditorToolTab>('vfx');
   const [projectTitle, setProjectTitle] = useState('CapCut AI Viral Cut');
 
-  const [editState, setEditState] = useState<CapCutEditState>({
+  const [editState, setEditState] = useState<CapCutEditState>(() => ({
     trimStart: 0,
-    trimEnd: 10,
+    trimEnd: 15,
     speed: 1,
     filterId: 'capcut_hdr',
-    brightness: 2,
-    contrast: 6,
-    saturation: 12,
+    vfxId: 'neon_pulse',
+    vfxIntensity: 80,
+    animationId: 'zoom_punch',
+    stickerId: 'fire_viral',
+    canvasBg: 'blur',
+    zoomScale: 100,
+    rotationDeg: 0,
+    flipHorizontal: false,
+    flipVertical: false,
+    brightness: 4,
+    contrast: 8,
+    saturation: 16,
     canvasRatio: '9:16',
     captionText: 'WAIT FOR THE END',
+    timedCaptions: buildDefaultTimedCaptions(
+      ['WAIT FOR THE END', 'POV: THIS CHANGED EVERYTHING', '10/10 VISUAL UPGRADE'],
+      0,
+      15
+    ),
+    useTimedCaptions: true,
     captionPosition: 'bottom',
     captionStyle: 'viral_yellow',
     volumePercent: 100,
+    bassBoost: true,
+    voiceClarity: true,
     audioFade: true,
     vignette: false,
-  });
+  }));
+
+  const [timelineSegments, setTimelineSegments] = useState<CapCutTimelineSegment[]>([
+    { id: 'seg_1', startSec: 0, endSec: 15, label: 'Scene 1 (Main Cut)' },
+  ]);
+  const [beatMarkers, setBeatMarkers] = useState<number[]>([2.4, 6.0, 10.5]);
 
   const [aiSuggestion, setAiSuggestion] = useState<CapCutAiEditSuggestion | null>(null);
   const [isAnalyzingAi, setIsAnalyzingAi] = useState(false);
@@ -110,10 +149,12 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
   const [isDownloading, setIsDownloading] = useState(false);
   const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [statusBanner, setStatusBanner] = useState<string | null>(null);
 
   // Live preview player state
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hasAutoLoadedRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
@@ -130,17 +171,72 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
     setSourceClip(clip);
     const isPortrait = clip.height >= clip.width;
     const defaultEnd = Math.round(Math.min(clip.durationSec, 15) * 10) / 10;
+    const initialCues = buildDefaultTimedCaptions(
+      ['WAIT FOR THE END', 'POV: THIS CHANGED EVERYTHING', '10/10 VISUAL UPGRADE'],
+      0,
+      defaultEnd
+    );
     setEditState((prev) => ({
       ...prev,
       trimStart: 0,
       trimEnd: Math.max(1, defaultEnd),
       canvasRatio: isPortrait ? '9:16' : '16:9',
+      timedCaptions: initialCues,
     }));
+    setTimelineSegments([
+      { id: 'seg_1', startSec: 0, endSec: Math.max(1, defaultEnd), label: 'Part 1 (Full Cut)' },
+    ]);
+    setBeatMarkers([
+      Math.round(defaultEnd * 0.25 * 10) / 10,
+      Math.round(defaultEnd * 0.55 * 10) / 10,
+      Math.round(defaultEnd * 0.85 * 10) / 10,
+    ]);
     setCurrentTime(0);
-    setAiSuggestion(null);
     setExportedVideo(null);
     setDownloadSuccess(false);
   };
+
+  // Load sample or recent video via URL
+  const handleLoadUrlClip = async (url: string, label: string) => {
+    setErrorMessage(null);
+    setIsUploading(true);
+    try {
+      const response = await fetch('/api/studio/load-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          slot: 'clipA',
+          filename: label,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to load video into CapCut editor.');
+      }
+      applyNewClipDefaults(data.clip);
+      setStatusBanner(`Loaded "${data.clip.filename}" (${data.clip.width}×${data.clip.height}, ${data.clip.durationSec}s) into CapCut Timeline.`);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Could not load video.');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  // Auto-load a working video clip on initial mount so the CapCut Editor is immediately live & interactive
+  useEffect(() => {
+    if (hasAutoLoadedRef.current || sourceClip) return;
+    hasAutoLoadedRef.current = true;
+    const initialUrl =
+      recentDownloads.length > 0
+        ? recentDownloads[0].downloadUrl
+        : 'capcut://sample-1';
+    const initialLabel =
+      recentDownloads.length > 0
+        ? recentDownloads[0].filename
+        : 'CapCut_Studio_Short_1.mp4';
+    handleLoadUrlClip(initialUrl, initialLabel);
+  }, []);
 
   // Upload a local video file from user's device
   const handleFileUpload = async (file: File) => {
@@ -163,34 +259,9 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         throw new Error(data.error || 'Failed to upload video to editor.');
       }
       applyNewClipDefaults(data.clip);
+      setStatusBanner(`Uploaded "${data.clip.filename}" (${data.clip.durationSec}s) — Ready to edit!`);
     } catch (err: any) {
       setErrorMessage(err.message || 'Could not upload video file.');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  // Load sample or recent video via URL
-  const handleLoadUrlClip = async (url: string, label: string) => {
-    setErrorMessage(null);
-    setIsUploading(true);
-    try {
-      const response = await fetch('/api/studio/load-url', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url,
-          slot: 'clipA',
-          filename: label,
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || 'Failed to load video into CapCut editor.');
-      }
-      applyNewClipDefaults(data.clip);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Could not load video.');
     } finally {
       setIsUploading(false);
     }
@@ -228,18 +299,26 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
       );
       setAiSuggestion(normalized);
 
-      // Automatically apply AI smart grade, caption, and trim
+      // Automatically apply AI smart VFX, LUT grade, animation, sticker, timed captions, and trim
       setEditState((prev) => ({
         ...prev,
         filterId: normalized.recommendedFilter,
+        vfxId: normalized.recommendedVfx,
+        animationId: normalized.recommendedAnimation,
+        stickerId: normalized.recommendedSticker,
         speed: normalized.recommendedSpeed,
         canvasRatio: normalized.recommendedCanvasRatio,
         trimStart: normalized.recommendedTrimStart,
         trimEnd: normalized.recommendedTrimEnd,
         captionText: normalized.suggestedCaptions[0] || prev.captionText,
+        timedCaptions: normalized.timedCaptions,
+        useTimedCaptions: true,
         captionPosition: normalized.recommendedCaptionPosition,
         captionStyle: normalized.recommendedCaptionStyle,
       }));
+      setStatusBanner(
+        `AI Magic Edit applied: ${normalized.recommendedVfx} VFX + ${normalized.recommendedFilter} LUT + ${normalized.timedCaptions.length} timed captions!`
+      );
     } catch (err: any) {
       setErrorMessage(err.message || 'Could not run AI Magic Edit.');
     } finally {
@@ -258,12 +337,17 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
     setDownloadSuccess(false);
 
     try {
+      const activeBurnCaption = editState.useTimedCaptions
+        ? editState.timedCaptions.map((c) => c.text).join(' • ')
+        : editState.captionText;
+
       const response = await fetch('/api/editor/render', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           clipId: sourceClip.clipId,
           ...editState,
+          captionText: activeBurnCaption.slice(0, 48),
           title: projectTitle,
         }),
       });
@@ -272,6 +356,9 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         throw new Error(data.error || 'Failed to render edited MP4 video.');
       }
       setExportedVideo(data.exported);
+      setStatusBanner(
+        `Export complete! Rendered ${data.exported.width}×${data.exported.height} MP4 (${data.exported.durationSec}s) with ${editState.vfxId} VFX & ${editState.filterId} LUT.`
+      );
     } catch (err: any) {
       setErrorMessage(err.message || 'Could not export edited video.');
     } finally {
@@ -352,10 +439,50 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
       ...prev,
       trimStart,
       trimEnd,
+      timedCaptions: buildDefaultTimedCaptions(
+        prev.timedCaptions.map((c) => c.text),
+        trimStart,
+        trimEnd
+      ),
     }));
     if (videoRef.current) {
       videoRef.current.currentTime = trimStart;
       setCurrentTime(trimStart);
+    }
+  };
+
+  // CapCut Split Clip at Playhead action
+  const handleSplitAtPlayhead = () => {
+    const splitPoint =
+      currentTime > editState.trimStart + 0.6 && currentTime < editState.trimEnd - 0.6
+        ? Math.round(currentTime * 10) / 10
+        : Math.round(((editState.trimStart + editState.trimEnd) / 2) * 10) / 10;
+
+    const nextSegments: CapCutTimelineSegment[] = [
+      {
+        id: `seg_a_${Date.now()}`,
+        startSec: editState.trimStart,
+        endSec: splitPoint,
+        label: `Part 1 (${editState.trimStart.toFixed(1)}s–${splitPoint.toFixed(1)}s)`,
+      },
+      {
+        id: `seg_b_${Date.now()}`,
+        startSec: splitPoint,
+        endSec: editState.trimEnd,
+        label: `Part 2 (${splitPoint.toFixed(1)}s–${editState.trimEnd.toFixed(1)}s)`,
+      },
+    ];
+    setTimelineSegments(nextSegments);
+    setStatusBanner(
+      `Split video clip at ${splitPoint.toFixed(1)}s into 2 segments! Click Part 1 or Part 2 on the timeline to solo-trim that segment.`
+    );
+  };
+
+  const handleAddBeatMarker = () => {
+    const marker = Math.round(currentTime * 10) / 10;
+    if (!beatMarkers.includes(marker)) {
+      setBeatMarkers((prev) => [...prev, marker].sort((a, b) => a - b));
+      setStatusBanner(`Added Beat Sync marker at ${marker.toFixed(1)}s.`);
     }
   };
 
@@ -365,10 +492,26 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
     editState.speed
   );
   const liveCssFilter = buildCssPreviewFilter(editState);
+  const liveTransformStyle = buildCanvasTransformStyle(editState);
+
+  const activeCaptionText = getActiveTimedCaption(
+    editState.timedCaptions,
+    currentTime,
+    editState.useTimedCaptions,
+    editState.captionText
+  );
+
   const activeCaptionStyleObj =
     CAPTION_STYLE_PRESETS.find((s) => s.id === editState.captionStyle) || CAPTION_STYLE_PRESETS[0];
+  const activeStickerObj =
+    CAPCUT_STICKER_PRESETS.find((s) => s.id === editState.stickerId) || CAPCUT_STICKER_PRESETS[0];
+  const activeCanvasBgObj =
+    CAPCUT_CANVAS_BG_PRESETS.find((b) => b.id === editState.canvasBg) ||
+    CAPCUT_CANVAS_BG_PRESETS[0];
+  const activeVfxObj =
+    CAPCUT_VFX_PRESETS.find((v) => v.id === editState.vfxId) || CAPCUT_VFX_PRESETS[0];
 
-  const maxClipDur = sourceClip?.durationSec || 10;
+  const maxClipDur = sourceClip?.durationSec || 15;
   const trimLeftPercent = Math.min(95, Math.max(0, (editState.trimStart / maxClipDur) * 100));
   const trimWidthPercent = Math.min(
     100 - trimLeftPercent,
@@ -387,17 +530,17 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         <div className="space-y-1">
           <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-400">
             <Scissors className="h-4 w-4" />
-            <span>Page 3 · CapCut AI Timeline &amp; Effect Editor</span>
+            <span>Page 3 · CapCut AI Pro Video Editor &amp; VFX Studio</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-white tracking-tight">
-            Edit Videos with CapCut Timeline, AI Auto-Captions &amp; Color LUTs
+            CapCut Video Editor with Live VFX, AI Auto-Captions, Split Timeline &amp; LUTs
           </h1>
           <p className="text-xs text-slate-400 max-w-2xl">
-            Upload any video or load a sample Reel, click <strong className="text-slate-200">AI Magic Edit</strong> for instant hook captions and color grading, fine-tune trim/speed/filters on the timeline, and export a verified H.264 + AAC <code className="text-amber-300">.mp4</code> file.
+            Apply real-time <strong className="text-slate-200">CapCut Visual Effects (RGB Glitch, VHS Cam, Neon Pulse, 2.35:1 Cinema)</strong>, <strong className="text-slate-200">Zoom/Flip/Rotate transforms</strong>, <strong className="text-slate-200">Timed Auto-Captions</strong>, and <strong className="text-slate-200">Timeline Split cuts</strong>, then export a verified H.264 + AAC <code className="text-amber-300">.mp4</code> file.
           </p>
         </div>
 
-        {/* Upload / Load Sample / Export Controls */}
+        {/* Upload / Load Sample / AI Magic / Export Controls */}
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <input
             ref={fileInputRef}
@@ -423,26 +566,14 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
             ) : (
               <Upload className="h-4 w-4" />
             )}
-            <span>{sourceClip ? 'Replace Video' : 'Upload Video'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() =>
-              handleLoadUrlClip(SAMPLE_REEL_URLS[0].url, 'CapCut_Sample_Short.mp4')
-            }
-            disabled={isUploading}
-            className="px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-50"
-          >
-            <Film className="h-3.5 w-3.5 text-amber-400" />
-            <span>Load Sample Reel</span>
+            <span>Upload Your Video</span>
           </button>
 
           <button
             type="button"
             onClick={handleRunAiMagicEdit}
             disabled={!sourceClip || isAnalyzingAi}
-            className="px-3.5 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/40 text-indigo-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
+            className="px-3.5 py-2 rounded-xl bg-indigo-500/25 hover:bg-indigo-500/35 border border-indigo-400/50 text-indigo-100 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40"
           >
             {isAnalyzingAi ? (
               <>
@@ -478,7 +609,7 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         </div>
       </div>
 
-      {/* Error Alert Banner */}
+      {/* Live Feedback Status or Error Banner */}
       {errorMessage && (
         <div
           role="alert"
@@ -489,22 +620,39 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         </div>
       )}
 
+      {statusBanner && !errorMessage && (
+        <div className="px-4 py-2.5 bg-amber-400/10 border border-amber-400/30 rounded-xl text-xs text-amber-200 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-amber-400 shrink-0" />
+            <span>{statusBanner}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStatusBanner(null)}
+            className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* Main CapCut 2-Column Workspace: Left Tool Dock & Inspector + Right Live Canvas & Export */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-        {/* LEFT COLUMN (7 cols): CapCut Tool Rail + Active Tool Inspector */}
+        {/* LEFT COLUMN (7 cols): CapCut 6-Tab Tool Rail + Active Tool Inspector */}
         <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-5">
-          {/* Tool Tabs Navigation */}
           <div className="space-y-4">
+            {/* 6 CapCut Editing Tool Tabs */}
             <div
               role="tablist"
               aria-label="CapCut Editing Tools"
-              className="grid grid-cols-2 sm:grid-cols-5 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800"
+              className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 bg-slate-950 p-1.5 rounded-xl border border-slate-800"
             >
               {[
+                { id: 'vfx' as EditorToolTab, label: 'Effects (VFX)', icon: Zap },
                 { id: 'ai' as EditorToolTab, label: 'AI Magic', icon: Sparkles },
-                { id: 'trim' as EditorToolTab, label: 'Trim & Ratio', icon: Scissors },
-                { id: 'text' as EditorToolTab, label: 'Text & Hook', icon: Type },
-                { id: 'filters' as EditorToolTab, label: 'Filters & LUT', icon: Sliders },
+                { id: 'text' as EditorToolTab, label: 'Captions', icon: Type },
+                { id: 'filters' as EditorToolTab, label: 'Color LUT', icon: Sliders },
+                { id: 'transform' as EditorToolTab, label: 'Crop & Trim', icon: Maximize2 },
                 { id: 'speed' as EditorToolTab, label: 'Speed & Audio', icon: Gauge },
               ].map((tab) => {
                 const Icon = tab.icon;
@@ -516,7 +664,7 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                     role="tab"
                     aria-selected={isSelected}
                     onClick={() => setActiveTab(tab.id)}
-                    className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                    className={`flex items-center justify-center gap-1.5 py-2 px-2 rounded-lg text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
                       isSelected
                         ? 'bg-amber-400 text-slate-950'
                         : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -529,68 +677,169 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
               })}
             </div>
 
-            {/* Quick Source Loader Bar if no clip loaded yet or switching clips */}
+            {/* Active Source Clip & Quick Switcher Bar */}
             <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-950/90 border border-slate-800/80 rounded-xl px-3.5 py-2.5 text-xs">
               <div className="flex items-center gap-2 min-w-0">
                 <Film className="h-4 w-4 text-amber-400 shrink-0" />
                 {sourceClip ? (
                   <span className="text-slate-200 font-medium truncate">
-                    {sourceClip.filename}{' '}
+                    Active Clip: <strong className="text-white">{sourceClip.filename}</strong>{' '}
                     <span className="font-mono tabular-nums text-slate-400">
                       ({sourceClip.width}×{sourceClip.height} · {sourceClip.durationSec}s ·{' '}
                       {formatByteSize(sourceClip.sizeBytes)})
                     </span>
                   </span>
                 ) : (
-                  <span className="text-slate-400">
-                    No video loaded yet — Upload a video file or load a sample clip:
-                  </span>
+                  <span className="text-slate-300">Loading studio clip into CapCut canvas...</span>
                 )}
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
-                {SAMPLE_REEL_URLS.slice(0, 2).map((sample, idx) => (
+                {[1, 2, 3].map((num) => (
                   <button
-                    key={sample.url}
+                    key={num}
                     type="button"
                     onClick={() =>
-                      handleLoadUrlClip(sample.url, `Sample_Clip_${idx + 1}.mp4`)
+                      handleLoadUrlClip(`capcut://sample-${num}`, `CapCut_Sample_${num}.mp4`)
                     }
                     disabled={isUploading}
                     className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-semibold text-slate-300 hover:text-white transition-colors cursor-pointer whitespace-nowrap"
                   >
-                    Sample {idx + 1}
+                    Sample {num}
                   </button>
                 ))}
-                {recentDownloads.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleLoadUrlClip(
-                        recentDownloads[0].downloadUrl,
-                        recentDownloads[0].filename
-                      )
-                    }
-                    disabled={isUploading}
-                    className="px-2.5 py-1 rounded-lg bg-amber-400/10 hover:bg-amber-400/20 border border-amber-400/30 text-[11px] font-semibold text-amber-300 transition-colors cursor-pointer whitespace-nowrap"
-                  >
-                    Use Latest Download
-                  </button>
-                )}
               </div>
             </div>
 
-            {/* TAB 1: AI MAGIC ASSISTANT */}
+            {/* TAB 1: CAPCUT VISUAL EFFECTS (VFX) & MOTION ANIMATIONS */}
+            {activeTab === 'vfx' && (
+              <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-white flex items-center gap-2">
+                      <Zap className="h-4 w-4 text-amber-400" />
+                      <span>CapCut Visual Effects (VFX) &amp; Motion Animations</span>
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Click any VFX card to apply real-time visual effects on the video canvas and burn them into your MP4 export.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs">
+                    <label htmlFor="vfx-intensity-slider" className="text-slate-300 font-semibold">
+                      VFX Intensity:
+                    </label>
+                    <input
+                      id="vfx-intensity-slider"
+                      type="range"
+                      min={20}
+                      max={100}
+                      step={5}
+                      value={editState.vfxIntensity}
+                      onChange={(e) =>
+                        setEditState((prev) => ({
+                          ...prev,
+                          vfxIntensity: parseInt(e.target.value, 10),
+                        }))
+                      }
+                      className="w-24 accent-amber-400 cursor-pointer"
+                    />
+                    <span className="font-mono tabular-nums text-amber-400 font-bold">
+                      {editState.vfxIntensity}%
+                    </span>
+                  </div>
+                </div>
+
+                {/* 8 CapCut VFX Cards */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {CAPCUT_VFX_PRESETS.map((vfx) => {
+                    const isSelected = editState.vfxId === vfx.id;
+                    return (
+                      <button
+                        key={vfx.id}
+                        type="button"
+                        onClick={() => {
+                          setEditState((prev) => ({
+                            ...prev,
+                            vfxId: vfx.id as CapCutVfxId,
+                          }));
+                          setStatusBanner(`Applied "${vfx.label}" visual effect to live canvas.`);
+                        }}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-400/15 border-amber-400 text-white shadow-md'
+                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 mb-1">
+                          <span className="text-xs font-extrabold text-white">
+                            {vfx.label}
+                          </span>
+                          <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-slate-950 text-amber-400 shrink-0">
+                            {vfx.badge}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 line-clamp-1 leading-snug">
+                          {vfx.description}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* CapCut In / Combo Motion Animations */}
+                <div className="space-y-2 pt-2 border-t border-slate-800">
+                  <span className="block text-xs font-bold text-white">
+                    Clip Motion Animation (In / Combo)
+                  </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {CAPCUT_ANIMATION_PRESETS.map((anim) => {
+                      const isSelected = editState.animationId === anim.id;
+                      return (
+                        <button
+                          key={anim.id}
+                          type="button"
+                          onClick={() => {
+                            setEditState((prev) => ({
+                              ...prev,
+                              animationId: anim.id as CapCutAnimationId,
+                            }));
+                            setStatusBanner(`Applied "${anim.label}" motion animation.`);
+                          }}
+                          className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                            isSelected
+                              ? 'bg-indigo-500/20 border-indigo-400 text-white'
+                              : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold">{anim.label}</span>
+                            <span className="text-[10px] font-mono text-indigo-300">
+                              {anim.type}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 truncate">
+                            {anim.description}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: AI MAGIC DIRECTOR */}
             {activeTab === 'ai' && (
               <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <h2 className="text-sm font-bold text-white flex items-center gap-2">
                       <Sparkles className="h-4 w-4 text-amber-400" />
-                      <span>CapCut AI Director &amp; Auto-Hook Generator</span>
+                      <span>CapCut AI Director &amp; Multi-Cue Auto-Captions</span>
                     </h2>
                     <p className="text-xs text-slate-400">
-                      Gemini Vision analyzes a keyframe from your clip to suggest viral hook captions, optimal LUT grading, and smart trim bounds.
+                      Gemini Vision inspects your video frame and automatically configures VFX, LUT grading, Zoom Punch animation, and 3 timed subtitle cues.
                     </p>
                   </div>
 
@@ -628,265 +877,210 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                       </p>
                     </div>
 
-                    <div className="space-y-1.5">
-                      <label className="block text-xs font-semibold text-slate-300">
-                        AI Suggested Hook Captions (Click to apply on video)
-                      </label>
-                      <div className="flex flex-wrap gap-2">
-                        {aiSuggestion.suggestedCaptions.map((cap) => (
-                          <button
-                            key={cap}
-                            type="button"
-                            onClick={() =>
-                              setEditState((prev) => ({ ...prev, captionText: cap }))
-                            }
-                            className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors cursor-pointer ${
-                              editState.captionText === cap
-                                ? 'bg-amber-400 text-slate-950 border-amber-400'
-                                : 'bg-slate-900 text-slate-200 border-slate-700 hover:border-amber-400/50'
-                            }`}
-                          >
-                            “{cap}”
-                          </button>
-                        ))}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                      <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                        <span className="text-[11px] text-slate-400 block">AI VFX</span>
+                        <span className="font-bold text-amber-400">
+                          {aiSuggestion.recommendedVfx}
+                        </span>
                       </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2.5 pt-1 text-xs">
                       <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
                         <span className="text-[11px] text-slate-400 block">AI Filter LUT</span>
-                        <span className="font-bold text-white">{aiSuggestion.recommendedFilter}</span>
+                        <span className="font-bold text-white">
+                          {aiSuggestion.recommendedFilter}
+                        </span>
+                      </div>
+                      <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                        <span className="text-[11px] text-slate-400 block">Animation</span>
+                        <span className="font-bold text-indigo-300">
+                          {aiSuggestion.recommendedAnimation}
+                        </span>
                       </div>
                       <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
                         <span className="text-[11px] text-slate-400 block">Smart Trim</span>
                         <span className="font-mono tabular-nums font-bold text-emerald-400">
-                          {aiSuggestion.recommendedTrimStart}s – {aiSuggestion.recommendedTrimEnd}s
-                        </span>
-                      </div>
-                      <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
-                        <span className="text-[11px] text-slate-400 block">Canvas Ratio</span>
-                        <span className="font-mono tabular-nums font-bold text-amber-400">
-                          {aiSuggestion.recommendedCanvasRatio}
+                          {aiSuggestion.recommendedTrimStart}s–{aiSuggestion.recommendedTrimEnd}s
                         </span>
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs text-slate-400 flex items-center justify-between gap-4">
+                  <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800/80 text-xs text-slate-300 flex items-center justify-between gap-4">
                     <span>
-                      {sourceClip
-                        ? 'Video loaded! Click "Run AI Magic Edit" to auto-generate viral captions, LUT filter, and smart trim.'
-                        : 'Step 1: Click "Upload Video" or "Load Sample Reel" above to start editing.'}
+                      Click <strong>Run AI Magic Edit</strong> to let Gemini analyze your video frame and auto-apply the optimal VFX, Color LUT, Animation, and Timed Captions.
                     </span>
                   </div>
                 )}
               </div>
             )}
 
-            {/* TAB 2: TRIM & CANVAS RATIO */}
-            {activeTab === 'trim' && (
-              <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-sm font-bold text-white">Smart Trim &amp; Aspect Ratio Canvas</h2>
-                  <span className="text-xs font-mono tabular-nums text-amber-400">
-                    Active Cut: {editState.trimStart.toFixed(1)}s → {editState.trimEnd.toFixed(1)}s (
-                    {editedDurationSec}s)
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs">
-                      <label htmlFor="trim-start-range" className="text-slate-300 font-medium">
-                        Trim Start (In Point)
-                      </label>
-                      <span className="font-mono tabular-nums text-white">
-                        {editState.trimStart.toFixed(1)}s
-                      </span>
-                    </div>
-                    <input
-                      id="trim-start-range"
-                      type="range"
-                      min={0}
-                      max={Math.max(1, (sourceClip?.durationSec || 12) - 1)}
-                      step={0.1}
-                      value={editState.trimStart}
-                      onChange={(e) =>
-                        updateTrimRange(parseFloat(e.target.value), editState.trimEnd)
-                      }
-                      className="w-full accent-amber-400 cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="space-y-1.5">
-                    <div className="flex justify-between text-xs">
-                      <label htmlFor="trim-end-range" className="text-slate-300 font-medium">
-                        Trim End (Out Point)
-                      </label>
-                      <span className="font-mono tabular-nums text-white">
-                        {editState.trimEnd.toFixed(1)}s
-                      </span>
-                    </div>
-                    <input
-                      id="trim-end-range"
-                      type="range"
-                      min={Math.min(1, sourceClip?.durationSec || 12)}
-                      max={sourceClip?.durationSec || 15}
-                      step={0.1}
-                      value={editState.trimEnd}
-                      onChange={(e) =>
-                        updateTrimRange(editState.trimStart, parseFloat(e.target.value))
-                      }
-                      className="w-full accent-amber-400 cursor-pointer"
-                    />
-                  </div>
-                </div>
-
-                {/* Quick Trim Presets */}
-                <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <span className="text-xs text-slate-400">Quick Cut:</span>
-                  <button
-                    type="button"
-                    onClick={() => updateTrimRange(0, Math.min(5, sourceClip?.durationSec || 5))}
-                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 cursor-pointer"
-                  >
-                    First 5s Hook
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateTrimRange(0, Math.min(10, sourceClip?.durationSec || 10))}
-                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 cursor-pointer"
-                  >
-                    Best 10s Reel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => updateTrimRange(0, sourceClip?.durationSec || 15)}
-                    className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 cursor-pointer"
-                  >
-                    Full Clip
-                  </button>
-                </div>
-
-                {/* Canvas Aspect Ratio Selector */}
-                <div className="space-y-2 pt-2 border-t border-slate-800">
-                  <label className="block text-xs font-semibold text-slate-300">
-                    Output Canvas Format
-                  </label>
-                  <div className="grid grid-cols-3 gap-2.5">
-                    {(
-                      [
-                        { id: '9:16', label: '9:16 Vertical', sub: 'Shorts / Reels / TikTok' },
-                        { id: '16:9', label: '16:9 Widescreen', sub: 'YouTube / Desktop HD' },
-                        { id: '1:1', label: '1:1 Square', sub: 'Feed Post' },
-                      ] as { id: CapCutCanvasRatio; label: string; sub: string }[]
-                    ).map((ratio) => (
-                      <button
-                        key={ratio.id}
-                        type="button"
-                        onClick={() =>
-                          setEditState((prev) => ({ ...prev, canvasRatio: ratio.id }))
-                        }
-                        className={`p-2.5 rounded-xl border text-left transition-colors cursor-pointer ${
-                          editState.canvasRatio === ratio.id
-                            ? 'bg-amber-400/15 border-amber-400 text-white'
-                            : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
-                        }`}
-                      >
-                        <div className="text-xs font-bold font-mono">{ratio.label}</div>
-                        <div className="text-[11px] text-slate-400">{ratio.sub}</div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 3: TEXT & HOOK CAPTIONS */}
+            {/* TAB 3: TIMED AUTO-CAPTIONS, TEXT & STICKERS */}
             {activeTab === 'text' && (
               <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
-                <div className="space-y-1.5">
-                  <div className="flex items-center justify-between">
-                    <label htmlFor="capcut-caption-input" className="text-xs font-bold text-white">
-                      On-Screen CapCut Hook Caption (Burned into Exported MP4)
-                    </label>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-bold text-white">
+                    Timed Auto-Captions &amp; Overlay Stickers
+                  </h2>
+                  <div className="flex items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setEditState((prev) => ({ ...prev, captionText: '' }))}
-                      className="text-[11px] text-slate-400 hover:text-white cursor-pointer"
+                      onClick={() =>
+                        setEditState((prev) => ({
+                          ...prev,
+                          useTimedCaptions: !prev.useTimedCaptions,
+                        }))
+                      }
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border cursor-pointer ${
+                        editState.useTimedCaptions
+                          ? 'bg-amber-400 text-slate-950 border-amber-400'
+                          : 'bg-slate-900 text-slate-300 border-slate-700'
+                      }`}
                     >
-                      Clear Text
+                      {editState.useTimedCaptions
+                        ? 'Timed Multi-Captions: ON'
+                        : 'Single Hook Caption'}
                     </button>
                   </div>
-                  <input
-                    id="capcut-caption-input"
-                    type="text"
-                    maxLength={48}
-                    value={editState.captionText}
-                    onChange={(e) =>
-                      setEditState((prev) => ({ ...prev, captionText: e.target.value }))
-                    }
-                    placeholder="Type bold on-screen caption (or leave empty for no text)..."
-                    className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-bold text-white focus:outline-none focus:border-amber-400"
-                  />
                 </div>
 
-                {/* Caption Style Presets */}
-                <div className="space-y-2">
+                {editState.useTimedCaptions ? (
+                  <div className="space-y-2">
+                    <span className="block text-xs text-slate-400">
+                      Edit the 3 timed subtitle cues (automatically switches on screen as the video plays):
+                    </span>
+                    {editState.timedCaptions.map((cue, idx) => (
+                      <div
+                        key={cue.id}
+                        className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl p-2"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => handleSeekTimeline(cue.startSec + 0.1)}
+                          className="px-2 py-1 rounded bg-slate-950 text-[11px] font-mono tabular-nums text-amber-400 shrink-0 cursor-pointer"
+                        >
+                          {cue.startSec.toFixed(1)}s–{cue.endSec.toFixed(1)}s
+                        </button>
+                        <input
+                          type="text"
+                          value={cue.text}
+                          aria-label={`Timed Caption Cue ${idx + 1}`}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEditState((prev) => ({
+                              ...prev,
+                              timedCaptions: prev.timedCaptions.map((item, i) =>
+                                i === idx ? { ...item, text: val } : item
+                              ),
+                            }));
+                          }}
+                          className="flex-1 px-2.5 py-1 rounded-lg bg-slate-950 border border-slate-800 text-xs font-bold text-white focus:outline-none focus:border-amber-400"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <label htmlFor="capcut-caption-input" className="text-xs font-bold text-white">
+                      Single On-Screen Hook Caption
+                    </label>
+                    <input
+                      id="capcut-caption-input"
+                      type="text"
+                      maxLength={48}
+                      value={editState.captionText}
+                      onChange={(e) =>
+                        setEditState((prev) => ({ ...prev, captionText: e.target.value }))
+                      }
+                      className="w-full px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                    />
+                  </div>
+                )}
+
+                {/* CapCut Stickers / Callout Badges */}
+                <div className="space-y-2 pt-2 border-t border-slate-800">
                   <span className="block text-xs font-semibold text-slate-300">
-                    CapCut Caption Box Style
+                    CapCut Callout Sticker Badge
                   </span>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {CAPTION_STYLE_PRESETS.map((style) => (
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                    {CAPCUT_STICKER_PRESETS.map((sticker) => (
                       <button
-                        key={style.id}
+                        key={sticker.id}
                         type="button"
                         onClick={() =>
                           setEditState((prev) => ({
                             ...prev,
-                            captionStyle: style.id as CapCutCaptionStyleId,
+                            stickerId: sticker.id as CapCutStickerId,
                           }))
                         }
-                        className={`p-2 rounded-xl border text-center text-xs font-bold transition-colors cursor-pointer ${
-                          editState.captionStyle === style.id
+                        className={`p-2 rounded-xl border text-center text-[11px] font-bold transition-colors cursor-pointer ${
+                          editState.stickerId === sticker.id
                             ? 'border-amber-400 bg-amber-400/15 text-white'
                             : 'border-slate-800 bg-slate-900 text-slate-300 hover:border-slate-700'
                         }`}
                       >
-                        {style.label}
+                        {sticker.label}
                       </button>
                     ))}
                   </div>
                 </div>
 
-                {/* Caption Vertical Alignment */}
-                <div className="space-y-2">
-                  <span className="block text-xs font-semibold text-slate-300">
-                    Caption Screen Position
-                  </span>
-                  <div className="grid grid-cols-3 gap-2">
-                    {(['top', 'center', 'bottom'] as CapCutCaptionPosition[]).map((pos) => (
-                      <button
-                        key={pos}
-                        type="button"
-                        onClick={() =>
-                          setEditState((prev) => ({ ...prev, captionPosition: pos }))
-                        }
-                        className={`py-2 px-3 rounded-xl border text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer ${
-                          editState.captionPosition === pos
-                            ? 'bg-amber-400 text-slate-950 border-amber-400'
-                            : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                        }`}
-                      >
-                        {pos}
-                      </button>
-                    ))}
+                {/* Caption Box Style & Position */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+                  <div className="space-y-1.5">
+                    <span className="block text-xs font-semibold text-slate-300">
+                      Caption Box Style
+                    </span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {CAPTION_STYLE_PRESETS.map((style) => (
+                        <button
+                          key={style.id}
+                          type="button"
+                          onClick={() =>
+                            setEditState((prev) => ({
+                              ...prev,
+                              captionStyle: style.id as CapCutCaptionStyleId,
+                            }))
+                          }
+                          className={`p-1.5 rounded-lg border text-xs font-bold cursor-pointer ${
+                            editState.captionStyle === style.id
+                              ? 'border-amber-400 bg-amber-400/15 text-white'
+                              : 'border-slate-800 bg-slate-900 text-slate-300'
+                          }`}
+                        >
+                          {style.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-xs font-semibold text-slate-300">
+                      Caption Alignment
+                    </span>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['top', 'center', 'bottom'] as CapCutCaptionPosition[]).map((pos) => (
+                        <button
+                          key={pos}
+                          type="button"
+                          onClick={() =>
+                            setEditState((prev) => ({ ...prev, captionPosition: pos }))
+                          }
+                          className={`py-2 px-2 rounded-lg border text-xs font-bold uppercase cursor-pointer ${
+                            editState.captionPosition === pos
+                              ? 'bg-amber-400 text-slate-950 border-amber-400'
+                              : 'bg-slate-900 text-slate-300 border-slate-800'
+                          }`}
+                        >
+                          {pos}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* TAB 4: FILTERS & COLOR ADJUST */}
+            {/* TAB 4: FILTERS & COLOR LUT ADJUST */}
             {activeTab === 'filters' && (
               <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
                 <div className="flex items-center justify-between">
@@ -934,7 +1128,6 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                   ))}
                 </div>
 
-                {/* Fine-Tune Color Sliders */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-800 text-xs">
                   <div className="space-y-1">
                     <div className="flex justify-between">
@@ -1009,7 +1202,182 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
               </div>
             )}
 
-            {/* TAB 5: SPEED & AUDIO */}
+            {/* TAB 5: CROP, TRANSFORM, TRIM & CANVAS RATIO */}
+            {activeTab === 'transform' && (
+              <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-sm font-bold text-white">
+                    Canvas Transform (Zoom, Rotate, Flip) &amp; Smart Trim
+                  </h2>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({
+                          ...prev,
+                          flipHorizontal: !prev.flipHorizontal,
+                        }))
+                      }
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold border flex items-center gap-1 cursor-pointer ${
+                        editState.flipHorizontal
+                          ? 'bg-amber-400 text-slate-950 border-amber-400'
+                          : 'bg-slate-900 text-slate-200 border-slate-700'
+                      }`}
+                    >
+                      <FlipHorizontal className="h-3.5 w-3.5" />
+                      <span>Mirror Flip</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({
+                          ...prev,
+                          rotationDeg: (((prev.rotationDeg + 90) % 360) as 0 | 90 | 180 | 270),
+                        }))
+                      }
+                      className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-slate-200 flex items-center gap-1 cursor-pointer"
+                    >
+                      <RotateCw className="h-3.5 w-3.5 text-amber-400" />
+                      <span>Rotate ({editState.rotationDeg}°)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Zoom Scale + Canvas Backdrop */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <label htmlFor="canvas-zoom-slider" className="text-slate-300 font-medium">
+                        Canvas Crop / Zoom Scale
+                      </label>
+                      <span className="font-mono tabular-nums text-amber-400 font-bold">
+                        {editState.zoomScale}%
+                      </span>
+                    </div>
+                    <input
+                      id="canvas-zoom-slider"
+                      type="range"
+                      min={100}
+                      max={180}
+                      step={5}
+                      value={editState.zoomScale}
+                      onChange={(e) =>
+                        setEditState((prev) => ({
+                          ...prev,
+                          zoomScale: parseInt(e.target.value, 10),
+                        }))
+                      }
+                      className="w-full accent-amber-400 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-xs text-slate-300 font-medium">
+                      Canvas Backdrop Fill
+                    </span>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {CAPCUT_CANVAS_BG_PRESETS.map((bg) => (
+                        <button
+                          key={bg.id}
+                          type="button"
+                          onClick={() =>
+                            setEditState((prev) => ({
+                              ...prev,
+                              canvasBg: bg.id as CapCutCanvasBgId,
+                            }))
+                          }
+                          className={`px-2 py-1.5 rounded-lg border text-[11px] font-bold cursor-pointer ${
+                            editState.canvasBg === bg.id
+                              ? 'border-amber-400 bg-amber-400/15 text-white'
+                              : 'border-slate-800 bg-slate-900 text-slate-400'
+                          }`}
+                        >
+                          {bg.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Trim Start / End Sliders */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <label htmlFor="trim-start-range" className="text-slate-300 font-medium">
+                        Trim Start (In Point)
+                      </label>
+                      <span className="font-mono tabular-nums text-white">
+                        {editState.trimStart.toFixed(1)}s
+                      </span>
+                    </div>
+                    <input
+                      id="trim-start-range"
+                      type="range"
+                      min={0}
+                      max={Math.max(1, (sourceClip?.durationSec || 15) - 1)}
+                      step={0.1}
+                      value={editState.trimStart}
+                      onChange={(e) =>
+                        updateTrimRange(parseFloat(e.target.value), editState.trimEnd)
+                      }
+                      className="w-full accent-amber-400 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="flex justify-between text-xs">
+                      <label htmlFor="trim-end-range" className="text-slate-300 font-medium">
+                        Trim End (Out Point)
+                      </label>
+                      <span className="font-mono tabular-nums text-white">
+                        {editState.trimEnd.toFixed(1)}s
+                      </span>
+                    </div>
+                    <input
+                      id="trim-end-range"
+                      type="range"
+                      min={Math.min(1, sourceClip?.durationSec || 15)}
+                      max={sourceClip?.durationSec || 15}
+                      step={0.1}
+                      value={editState.trimEnd}
+                      onChange={(e) =>
+                        updateTrimRange(editState.trimStart, parseFloat(e.target.value))
+                      }
+                      className="w-full accent-amber-400 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Aspect Ratio Selector */}
+                <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800">
+                  {(
+                    [
+                      { id: '9:16', label: '9:16 Vertical' },
+                      { id: '16:9', label: '16:9 Widescreen' },
+                      { id: '1:1', label: '1:1 Square' },
+                    ] as { id: CapCutCanvasRatio; label: string }[]
+                  ).map((ratio) => (
+                    <button
+                      key={ratio.id}
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({ ...prev, canvasRatio: ratio.id }))
+                      }
+                      className={`py-2 px-3 rounded-xl border text-xs font-bold font-mono transition-colors cursor-pointer ${
+                        editState.canvasRatio === ratio.id
+                          ? 'bg-amber-400/15 border-amber-400 text-white'
+                          : 'bg-slate-900 border-slate-800 text-slate-300'
+                      }`}
+                    >
+                      {ratio.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 6: SPEED & AUDIO MASTERING */}
             {activeTab === 'speed' && (
               <div className="space-y-4 bg-slate-950/70 border border-slate-800 rounded-xl p-4">
                 <div className="space-y-2">
@@ -1044,8 +1412,9 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-slate-800">
-                  <div className="space-y-1.5">
+                {/* Audio Volume & Mastering FX */}
+                <div className="space-y-3 pt-2 border-t border-slate-800">
+                  <div className="space-y-1">
                     <div className="flex justify-between text-xs">
                       <span className="text-slate-300 font-semibold">Audio Track Volume</span>
                       <span className="font-mono tabular-nums text-white">
@@ -1068,28 +1437,64 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                     />
                   </div>
 
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-800">
-                    <div>
-                      <div className="text-xs font-bold text-white">Smooth Audio Fade In/Out</div>
-                      <div className="text-[11px] text-slate-400">
-                        Prevents abrupt audio clicks at cut boundaries
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={editState.audioFade}
-                      onChange={(e) =>
-                        setEditState((prev) => ({ ...prev, audioFade: e.target.checked }))
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({ ...prev, bassBoost: !prev.bassBoost }))
                       }
-                      className="h-4 w-4 accent-amber-400 cursor-pointer"
-                    />
+                      className={`p-2.5 rounded-xl border text-left text-xs font-bold cursor-pointer ${
+                        editState.bassBoost
+                          ? 'bg-emerald-500/15 border-emerald-400 text-emerald-300'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>Bass Boost (+7dB)</div>
+                      <div className="text-[10px] font-normal text-slate-400">
+                        Punchy low-end EQ
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({ ...prev, voiceClarity: !prev.voiceClarity }))
+                      }
+                      className={`p-2.5 rounded-xl border text-left text-xs font-bold cursor-pointer ${
+                        editState.voiceClarity
+                          ? 'bg-emerald-500/15 border-emerald-400 text-emerald-300'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>AI Voice Clarity</div>
+                      <div className="text-[10px] font-normal text-slate-400">
+                        Denoise + vocal presence
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditState((prev) => ({ ...prev, audioFade: !prev.audioFade }))
+                      }
+                      className={`p-2.5 rounded-xl border text-left text-xs font-bold cursor-pointer ${
+                        editState.audioFade
+                          ? 'bg-emerald-500/15 border-emerald-400 text-emerald-300'
+                          : 'bg-slate-900 border-slate-800 text-slate-400'
+                      }`}
+                    >
+                      <div>Smooth Fade In/Out</div>
+                      <div className="text-[10px] font-normal text-slate-400">
+                        Anti-click audio edges
+                      </div>
+                    </button>
                   </div>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Export Filename & Summary Bar */}
+          {/* Export Filename & Active Effect Summary Bar */}
           <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="flex items-center gap-2 flex-1">
               <label
@@ -1107,9 +1512,9 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
               />
             </div>
 
-            <div className="flex items-center gap-3 text-xs font-mono tabular-nums text-slate-400">
+            <div className="flex flex-wrap items-center gap-2.5 text-xs font-mono tabular-nums text-slate-400">
+              <span className="text-amber-400 font-bold">VFX: {activeVfxObj.label}</span>
               <span>Ratio: {editState.canvasRatio}</span>
-              <span>Speed: {editState.speed}x</span>
               <span className="text-emerald-400 font-bold">Net: {editedDurationSec}s</span>
             </div>
           </div>
@@ -1117,25 +1522,40 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
 
         {/* RIGHT COLUMN (5 cols): Live CapCut Canvas Monitor & Exported MP4 Result */}
         <div className="lg:col-span-5 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between space-y-4">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wider text-slate-400">
-              Live CapCut Canvas Monitor ({editState.canvasRatio})
-            </span>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
+                CapCut Live Monitor ({editState.canvasRatio})
+              </span>
+              {editState.vfxId !== 'none' && (
+                <span className="px-2 py-0.5 rounded bg-amber-400/20 border border-amber-400/40 text-[10px] font-mono font-bold text-amber-300">
+                  FX: {activeVfxObj.label}
+                </span>
+              )}
+            </div>
             <span className="text-xs font-mono tabular-nums text-amber-400">
               {currentTime.toFixed(1)}s / {editState.trimEnd.toFixed(1)}s
             </span>
           </div>
 
-          {/* Live Video Preview Frame with Real-Time CSS Filter & Caption Overlay */}
-          <div className="relative bg-slate-950 border border-slate-800 rounded-xl overflow-hidden flex items-center justify-center min-h-[280px] sm:min-h-[320px]">
+          {/* Live Video Preview Frame with Real-Time VFX Overlays, Transform, LUT & Timed Captions */}
+          <div
+            className={`relative border border-slate-800 rounded-xl overflow-hidden flex items-center justify-center min-h-[290px] sm:min-h-[330px] ${activeCanvasBgObj.previewClass}`}
+          >
             {sourceClip ? (
               <div
-                className={`relative overflow-hidden bg-black flex items-center justify-center shadow-2xl ${
+                className={`relative overflow-hidden bg-black flex items-center justify-center shadow-2xl transition-all ${
                   editState.canvasRatio === '9:16'
-                    ? 'w-[190px] sm:w-[210px] aspect-[9/16]'
+                    ? 'w-[195px] sm:w-[215px] aspect-[9/16]'
                     : editState.canvasRatio === '1:1'
-                    ? 'w-[240px] sm:w-[260px] aspect-square'
+                    ? 'w-[245px] sm:w-[265px] aspect-square'
                     : 'w-full max-w-[360px] aspect-video'
+                } ${
+                  editState.vfxId === 'neon_pulse'
+                    ? 'ring-2 ring-fuchsia-500 shadow-[0_0_30px_rgba(217,70,239,0.55)]'
+                    : editState.vfxId === 'rgb_glitch'
+                    ? 'ring-2 ring-cyan-400 shadow-[-4px_0_12px_rgba(244,63,94,0.7),4px_0_12px_rgba(34,211,238,0.7)]'
+                    : ''
                 }`}
               >
                 <video
@@ -1146,56 +1566,82 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                   onTimeUpdate={handleTimeUpdate}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
-                  style={{ filter: liveCssFilter }}
-                  className="w-full h-full object-contain"
+                  style={{
+                    filter: liveCssFilter,
+                    transform: liveTransformStyle,
+                  }}
+                  className="w-full h-full object-contain transition-transform duration-200"
                 />
 
-                {/* Live CapCut On-Screen Caption Overlay */}
-                {editState.captionText.trim() && (
+                {/* LIVE CAPCUT VFX OVERLAYS */}
+                {editState.vfxId === 'vhs_retro' && (
+                  <div className="pointer-events-none absolute inset-0 flex flex-col justify-between p-2.5 font-mono text-[10px] text-amber-200/90 bg-[linear-gradient(transparent_50%,rgba(0,0,0,0.35)_50%)] bg-[length:100%_4px]">
+                    <div className="flex justify-between items-center">
+                      <span className="text-rose-400 font-bold">● REC</span>
+                      <span>SP 00:0{Math.floor(currentTime)}:18</span>
+                    </div>
+                    <div className="flex justify-between items-center text-[9px] text-amber-300/80">
+                      <span>PLAY ▷</span>
+                      <span>VHS CAM 1998</span>
+                    </div>
+                  </div>
+                )}
+
+                {editState.vfxId === 'rgb_glitch' && (
+                  <div className="pointer-events-none absolute inset-0 mix-blend-screen border-l-2 border-r-2 border-l-rose-500/70 border-r-cyan-400/70 bg-[linear-gradient(transparent_60%,rgba(34,211,238,0.12)_60%)] bg-[length:100%_6px]" />
+                )}
+
+                {editState.vfxId === 'cinema_scope' && (
+                  <>
+                    <div className="pointer-events-none absolute top-0 inset-x-0 h-[11%] bg-black z-10" />
+                    <div className="pointer-events-none absolute bottom-0 inset-x-0 h-[11%] bg-black z-10" />
+                  </>
+                )}
+
+                {editState.vfxId === 'dreamy_bloom' && (
+                  <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-amber-500/15 via-transparent to-rose-400/20 mix-blend-screen" />
+                )}
+
+                {editState.vfxId === 'flash_strobe' && (
+                  <div className="pointer-events-none absolute inset-0 ring-4 ring-inset ring-white/40 bg-white/10" />
+                )}
+
+                {/* Live CapCut Sticker Overlay */}
+                {activeStickerObj.id !== 'none' && (
+                  <div className="pointer-events-none absolute top-3 right-2.5 z-20">
+                    <span
+                      className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-extrabold border shadow-md ${activeStickerObj.badgeClass}`}
+                    >
+                      {activeStickerObj.text}
+                    </span>
+                  </div>
+                )}
+
+                {/* Live CapCut On-Screen Timed Caption Overlay */}
+                {activeCaptionText.trim() && (
                   <div
-                    className={`pointer-events-none absolute inset-x-3 flex justify-center text-center ${
+                    className={`pointer-events-none absolute inset-x-2.5 z-20 flex justify-center text-center ${
                       editState.captionPosition === 'top'
-                        ? 'top-4'
+                        ? 'top-9'
                         : editState.captionPosition === 'center'
                         ? 'top-1/2 -translate-y-1/2'
-                        : 'bottom-5'
+                        : 'bottom-6'
                     }`}
                   >
                     <span
                       className={`text-[11px] sm:text-xs tracking-wide uppercase break-words max-w-full ${activeCaptionStyleObj.previewClass}`}
                     >
-                      {editState.captionText}
+                      {activeCaptionText}
                     </span>
                   </div>
                 )}
               </div>
             ) : (
               <div className="p-6 text-center space-y-3">
-                <Film className="h-8 w-8 text-slate-600 mx-auto" />
-                <div className="space-y-1">
-                  <p className="text-sm font-bold text-slate-300">No Video in CapCut Canvas</p>
-                  <p className="text-xs text-slate-500 max-w-xs mx-auto">
-                    Upload a video from your device or load a sample Reel to preview real-time filters, captions, and timeline cuts.
-                  </p>
-                </div>
-                <div className="flex items-center justify-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    className="px-3.5 py-2 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs cursor-pointer"
-                  >
-                    Upload Video File
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      handleLoadUrlClip(SAMPLE_REEL_URLS[0].url, 'CapCut_Sample_Short.mp4')
-                    }
-                    className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 font-semibold text-xs cursor-pointer"
-                  >
-                    Load Sample Reel
-                  </button>
-                </div>
+                <Loader2 className="h-7 w-7 text-amber-400 animate-spin mx-auto" />
+                <p className="text-xs font-semibold text-slate-300">
+                  Loading video into CapCut Canvas...
+                </p>
               </div>
             )}
           </div>
@@ -1208,9 +1654,19 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                 onClick={togglePlayPause}
                 disabled={!sourceClip}
                 aria-label={isPlaying ? 'Pause Preview' : 'Play Preview'}
-                className="p-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold transition-colors cursor-pointer disabled:opacity-40"
+                className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-40"
               >
-                {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {isPlaying ? (
+                  <>
+                    <Pause className="h-3.5 w-3.5" />
+                    <span>Pause</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-3.5 w-3.5" />
+                    <span>Play Preview</span>
+                  </>
+                )}
               </button>
 
               <button
@@ -1235,7 +1691,7 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
             </div>
 
             <div className="text-xs font-mono tabular-nums text-slate-300">
-              Cut: {editState.trimStart.toFixed(1)}s – {editState.trimEnd.toFixed(1)}s ·{' '}
+              {editState.trimStart.toFixed(1)}s–{editState.trimEnd.toFixed(1)}s ·{' '}
               <span className="text-amber-400">{editState.speed}x</span>
             </div>
           </div>
@@ -1281,19 +1737,81 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
         </div>
       </div>
 
-      {/* BOTTOM MULTI-TRACK CAPCUT TIMELINE */}
+      {/* BOTTOM MULTI-TRACK CAPCUT TIMELINE WITH REAL SPLIT / TRIM / BEAT TOOLS */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* CapCut Timeline Action Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-slate-800">
           <div className="flex items-center gap-2">
             <Layers className="h-4 w-4 text-amber-400" />
             <span className="text-xs font-bold uppercase tracking-wider text-white">
-              Multi-Track CapCut Timeline
+              CapCut Multi-Track Timeline
             </span>
           </div>
 
+          {/* Direct Timeline Editing Action Buttons */}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleSplitAtPlayhead}
+              disabled={!sourceClip}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-amber-400 flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            >
+              <Scissors className="h-3.5 w-3.5" />
+              <span>Split Clip</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => updateTrimRange(currentTime, editState.trimEnd)}
+              disabled={!sourceClip}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 cursor-pointer disabled:opacity-40"
+            >
+              [ Set Start
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                updateTrimRange(
+                  editState.trimStart,
+                  Math.max(editState.trimStart + 1, currentTime)
+                )
+              }
+              disabled={!sourceClip}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 cursor-pointer disabled:opacity-40"
+            >
+              Set End ]
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setEditState((prev) => ({
+                  ...prev,
+                  flipHorizontal: !prev.flipHorizontal,
+                }))
+              }
+              disabled={!sourceClip}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            >
+              <FlipHorizontal className="h-3.5 w-3.5 text-indigo-400" />
+              <span>Flip</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleAddBeatMarker}
+              disabled={!sourceClip}
+              className="px-2.5 py-1 rounded-lg bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-emerald-300 flex items-center gap-1 cursor-pointer disabled:opacity-40"
+            >
+              <Music className="h-3.5 w-3.5" />
+              <span>+ Beat Marker</span>
+            </button>
+          </div>
+
           {/* Interactive Timeline Playhead Scrubber */}
-          <div className="flex items-center gap-3 flex-1 max-w-md">
-            <span className="text-[11px] font-mono tabular-nums text-slate-400">Playhead</span>
+          <div className="flex items-center gap-2.5 flex-1 min-w-[220px] max-w-sm">
+            <span className="text-[11px] font-mono tabular-nums text-slate-400">Scrub</span>
             <input
               type="range"
               aria-label="Timeline Playhead Scrubber"
@@ -1321,58 +1839,118 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
             />
           )}
 
-          {/* Track 1: Text & Hook Caption Track */}
+          {/* Track 1: Timed Auto-Captions & Sticker Track */}
           <div
             onClick={() => setActiveTab('text')}
             className="relative h-8 rounded-lg bg-slate-900/90 border border-slate-800/80 flex items-center px-3 cursor-pointer hover:border-slate-700"
           >
             <span className="text-[11px] font-semibold text-slate-400 w-28 shrink-0">
-              T1 · Text Overlay
+              T1 · Captions
             </span>
-            <div className="relative flex-1 h-5 bg-slate-950 rounded overflow-hidden">
-              {editState.captionText.trim() && (
+            <div className="relative flex-1 h-5 bg-slate-950 rounded overflow-hidden flex items-center gap-1 px-1">
+              {editState.useTimedCaptions ? (
+                editState.timedCaptions.map((cue) => (
+                  <div
+                    key={cue.id}
+                    className="flex-1 h-4 bg-indigo-500/30 border border-indigo-400/60 rounded px-1.5 flex items-center justify-between min-w-0"
+                  >
+                    <span className="text-[10px] font-bold text-indigo-200 truncate">
+                      “{cue.text}”
+                    </span>
+                    <span className="text-[9px] font-mono text-indigo-300 shrink-0 ml-1">
+                      {cue.startSec.toFixed(0)}s-{cue.endSec.toFixed(0)}s
+                    </span>
+                  </div>
+                ))
+              ) : (
                 <div
                   style={{ left: `${trimLeftPercent}%`, width: `${trimWidthPercent}%` }}
                   className="absolute top-0 bottom-0 bg-indigo-500/30 border border-indigo-400/60 rounded px-2 flex items-center"
                 >
                   <span className="text-[10px] font-bold text-indigo-200 truncate">
-                    “{editState.captionText}” ({editState.captionPosition})
+                    “{editState.captionText}”
                   </span>
                 </div>
               )}
             </div>
           </div>
 
-          {/* Track 2: Main Video + Color LUT Track */}
+          {/* Track 2: VFX & Animation Layer */}
           <div
-            onClick={() => setActiveTab('trim')}
-            className="relative h-10 rounded-lg bg-slate-900/90 border border-slate-800/80 flex items-center px-3 cursor-pointer hover:border-slate-700"
+            onClick={() => setActiveTab('vfx')}
+            className="relative h-8 rounded-lg bg-slate-900/90 border border-slate-800/80 flex items-center px-3 cursor-pointer hover:border-slate-700"
           >
             <span className="text-[11px] font-semibold text-slate-400 w-28 shrink-0">
-              V1 · Main Video
+              FX1 · Visual FX
             </span>
-            <div className="relative flex-1 h-7 bg-slate-950 rounded overflow-hidden">
+            <div className="relative flex-1 h-5 bg-slate-950 rounded overflow-hidden">
               <div
                 style={{ left: `${trimLeftPercent}%`, width: `${trimWidthPercent}%` }}
-                className="absolute top-0 bottom-0 bg-amber-400/20 border-2 border-amber-400 rounded px-2 flex items-center justify-between"
+                className="absolute top-0 bottom-0 bg-fuchsia-500/25 border border-fuchsia-400/60 rounded px-2 flex items-center justify-between"
               >
-                <span className="text-[11px] font-bold text-amber-300 truncate">
-                  {sourceClip ? sourceClip.filename : 'Upload Video'} · LUT: {editState.filterId}
+                <span className="text-[10px] font-bold text-fuchsia-200 truncate">
+                  VFX: {activeVfxObj.label} ({editState.vfxIntensity}%) · Anim:{' '}
+                  {editState.animationId}
                 </span>
-                <span className="text-[10px] font-mono tabular-nums text-amber-200 shrink-0">
-                  {editState.trimStart.toFixed(1)}s–{editState.trimEnd.toFixed(1)}s ({editState.speed}x)
-                </span>
+                {activeStickerObj.id !== 'none' && (
+                  <span className="text-[10px] font-bold text-amber-300 shrink-0">
+                    {activeStickerObj.text}
+                  </span>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Track 3: Audio & Fade Track */}
+          {/* Track 3: Main Video Track + Split Segments */}
+          <div
+            onClick={() => setActiveTab('transform')}
+            className="relative h-10 rounded-lg bg-slate-900/90 border border-slate-800/80 flex items-center px-3 cursor-pointer hover:border-slate-700"
+          >
+            <span className="text-[11px] font-semibold text-slate-400 w-28 shrink-0">
+              V1 · Video Cut
+            </span>
+            <div className="relative flex-1 h-7 bg-slate-950 rounded overflow-hidden flex items-center gap-1 px-1">
+              {timelineSegments.length > 1 ? (
+                timelineSegments.map((seg) => (
+                  <button
+                    key={seg.id}
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      updateTrimRange(seg.startSec, seg.endSec);
+                      setStatusBanner(`Solo-selected ${seg.label}.`);
+                    }}
+                    className="flex-1 h-6 bg-amber-400/25 hover:bg-amber-400/35 border-2 border-amber-400 rounded px-2 flex items-center justify-between cursor-pointer"
+                  >
+                    <span className="text-[10px] font-bold text-amber-200 truncate">
+                      ✂ {seg.label}
+                    </span>
+                  </button>
+                ))
+              ) : (
+                <div
+                  style={{ left: `${trimLeftPercent}%`, width: `${trimWidthPercent}%` }}
+                  className="absolute top-0 bottom-0 bg-amber-400/20 border-2 border-amber-400 rounded px-2 flex items-center justify-between"
+                >
+                  <span className="text-[11px] font-bold text-amber-300 truncate">
+                    {sourceClip ? sourceClip.filename : 'Loading...'} · LUT: {editState.filterId}
+                  </span>
+                  <span className="text-[10px] font-mono tabular-nums text-amber-200 shrink-0">
+                    {editState.trimStart.toFixed(1)}s–{editState.trimEnd.toFixed(1)}s (
+                    {editState.speed}x)
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Track 4: Stereo Audio + Beat Sync Markers */}
           <div
             onClick={() => setActiveTab('speed')}
             className="relative h-8 rounded-lg bg-slate-900/90 border border-slate-800/80 flex items-center px-3 cursor-pointer hover:border-slate-700"
           >
             <span className="text-[11px] font-semibold text-slate-400 w-28 shrink-0">
-              A1 · Stereo Audio
+              A1 · Audio &amp; Beats
             </span>
             <div className="relative flex-1 h-5 bg-slate-950 rounded overflow-hidden">
               <div
@@ -1380,8 +1958,12 @@ export const CapCutEditorPage: React.FC<CapCutEditorPageProps> = ({
                 className="absolute top-0 bottom-0 bg-emerald-500/20 border border-emerald-400/50 rounded px-2 flex items-center justify-between"
               >
                 <span className="text-[10px] font-semibold text-emerald-300 truncate">
-                  Volume {editState.volumePercent}%{' '}
-                  {editState.audioFade ? '· Smooth Fade In/Out' : ''}
+                  Vol {editState.volumePercent}%
+                  {editState.bassBoost ? ' · Bass Boost' : ''}
+                  {editState.voiceClarity ? ' · Voice Clarity' : ''}
+                </span>
+                <span className="text-[10px] font-mono text-amber-300 shrink-0">
+                  Beats: {beatMarkers.map((b) => `${b}s`).join(', ')}
                 </span>
               </div>
             </div>
