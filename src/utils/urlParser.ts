@@ -174,18 +174,26 @@ export function parseVideoUrl(inputUrl: string): ParsedVideoInfo {
     }
   }
 
-  // 3. Facebook Reels & Watch Videos
+  // 3. Facebook Reels, Share Links & Watch Videos
   if (
     hostname.includes('facebook.com') ||
     hostname.includes('fb.watch') ||
     hostname.includes('fb.com')
   ) {
     let fbId: string | null = null;
+    const shareMatch = pathname.match(/\/share\/(?:r|v)\/([a-zA-Z0-9_-]+)/);
     const reelMatch = pathname.match(/\/(?:reel|reels|watch|videos)\/([a-zA-Z0-9_-]+)/);
-    if (reelMatch) {
+    if (shareMatch) {
+      fbId = shareMatch[1];
+    } else if (reelMatch) {
       fbId = reelMatch[1];
+    } else if (hostname.includes('fb.watch')) {
+      fbId = pathname.replace(/\//g, '').trim() || 'fb_reel';
     } else {
-      fbId = parsedUrl.searchParams.get('v') || pathname.replace(/\//g, '') || 'fb_reel';
+      fbId =
+        parsedUrl.searchParams.get('v') ||
+        pathname.split('/').filter(Boolean).pop() ||
+        'fb_reel';
     }
 
     const cleanUrl = parsedUrl.toString();
@@ -198,10 +206,12 @@ export function parseVideoUrl(inputUrl: string): ParsedVideoInfo {
       videoId: fbId,
       title: presetMatch?.title || `Facebook Reel (${fbId})`,
       author: presetMatch?.author || 'Facebook Creator',
-      durationLabel: presetMatch?.duration || '00:15',
+      durationLabel: presetMatch?.duration || '01:14',
       isValid: true,
       cleanUrl,
-      embedUrl: `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(cleanUrl)}&show_text=false`,
+      // Never use Facebook's legacy plugins/video.php iframe because it blocks Reels and share/r/ links
+      // with "Video Unavailable - This video may no longer exist, or you don't have permission to view it."
+      embedUrl: null,
       streamUrl: `/api/stream?url=${encodeURIComponent(cleanUrl)}&platform=facebook&id=${encodeURIComponent(fbId)}`,
       posterUrl: undefined,
       canEmbed: true,
@@ -230,7 +240,7 @@ export function parseVideoUrl(inputUrl: string): ParsedVideoInfo {
       durationLabel: '00:15',
       isValid: true,
       cleanUrl,
-      embedUrl: match ? `https://www.tiktok.com/embed/v2/${tiktokId}` : null,
+      embedUrl: null,
       streamUrl: `/api/stream?url=${encodeURIComponent(cleanUrl)}&platform=tiktok&id=${encodeURIComponent(tiktokId)}`,
       posterUrl: undefined,
       canEmbed: true,
@@ -295,7 +305,7 @@ export function parseVideoUrl(inputUrl: string): ParsedVideoInfo {
 }
 
 /**
- * Verified live public URLs for quick testing of YouTube Shorts, Instagram Reels, and Direct MP4
+ * Verified live public URLs for quick testing of YouTube Shorts, Instagram Reels, Facebook Reels, and Direct MP4
  */
 export const SAMPLE_REEL_URLS = [
   {
@@ -315,12 +325,12 @@ export const SAMPLE_REEL_URLS = [
     duration: '00:32',
   },
   {
-    name: 'YouTube Short (Solar Eclipse)',
-    platform: 'youtube' as SupportedPlatform,
-    url: 'https://www.youtube.com/shorts/myZ9kn9MIWQ',
-    title: '2026 Solar Eclipse @ 50,000 Feet',
-    author: '@YouTube',
-    duration: '01:33',
+    name: 'Facebook Reel',
+    platform: 'facebook' as SupportedPlatform,
+    url: 'https://www.facebook.com/reel/10153231379946729',
+    title: 'Facebook Engineering Reel Showcase',
+    author: 'Facebook',
+    duration: '01:14',
   },
   {
     name: 'Direct MP4 Stream',

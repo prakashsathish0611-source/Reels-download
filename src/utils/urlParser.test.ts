@@ -24,15 +24,23 @@ test('parseVideoUrl detects Instagram Reels and enables direct download', () => 
   assert.equal(result.filename, 'instagram_reel_C3bL5J2x_9A.mp4');
 });
 
-test('parseVideoUrl detects Facebook Reels and enables direct download', () => {
+test('parseVideoUrl detects Facebook Reels and share links with direct MP4 stream (no broken plugin iframe)', () => {
   const result = parseVideoUrl('https://www.facebook.com/reel/1029384756');
   assert.equal(result.isValid, true);
   assert.equal(result.platform, 'facebook');
   assert.equal(result.videoId, '1029384756');
+  assert.equal(result.embedUrl, null);
   assert.equal(result.canEmbed, true);
   assert.equal(result.canDirectDownload, true);
   assert.ok(result.downloadUrl?.includes('platform=facebook'));
   assert.equal(result.filename, 'facebook_reel_1029384756.mp4');
+
+  const shareResult = parseVideoUrl('https://www.facebook.com/share/r/1A2B3C4D/');
+  assert.equal(shareResult.isValid, true);
+  assert.equal(shareResult.platform, 'facebook');
+  assert.equal(shareResult.videoId, '1A2B3C4D');
+  assert.equal(shareResult.embedUrl, null);
+  assert.equal(shareResult.filename, 'facebook_reel_1A2B3C4D.mp4');
 });
 
 test('parseVideoUrl detects Direct MP4 files and enables download', () => {

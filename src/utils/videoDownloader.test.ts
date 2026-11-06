@@ -4,6 +4,7 @@ import {
   sanitizeMp4Filename,
   buildDownloadRequestUrl,
   validateMp4Header,
+  buildChunkEndpointsFromDownloadUrl,
 } from './videoDownloader';
 
 test('sanitizeMp4Filename normalizes filenames and appends quality suffix cleanly', () => {
@@ -36,6 +37,23 @@ test('buildDownloadRequestUrl sets quality and filename parameters without dupli
   assert.ok(built.includes('filename=youtube_short_tY-CR5Ki-OY_720p.mp4'));
   // Ensure only one filename= parameter exists
   assert.equal(built.split('filename=').length - 1, 1);
+});
+
+test('buildChunkEndpointsFromDownloadUrl maps social and studio download URLs to prepare and chunk endpoints', () => {
+  const socialEndpoints = buildChunkEndpointsFromDownloadUrl(
+    '/api/download?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dx1Q0Saq1A8k&platform=youtube&id=x1Q0Saq1A8k&quality=1080p'
+  );
+  assert.ok(socialEndpoints);
+  assert.ok(socialEndpoints.prepareUrl.startsWith('/api/prepare-download?'));
+  assert.ok(socialEndpoints.chunkBaseUrl.startsWith('/api/download-chunk?'));
+  assert.ok(socialEndpoints.chunkBaseUrl.includes('id=x1Q0Saq1A8k'));
+
+  const studioEndpoints = buildChunkEndpointsFromDownloadUrl(
+    '/api/studio/download/merged_abc123?filename=ai_merged_video.mp4'
+  );
+  assert.ok(studioEndpoints);
+  assert.equal(studioEndpoints.prepareUrl, '/api/prepare-download?clipId=merged_abc123');
+  assert.equal(studioEndpoints.chunkBaseUrl, '/api/download-chunk?clipId=merged_abc123');
 });
 
 test('validateMp4Header accepts valid ISO MP4 ftyp header and rejects HTML/JSON or empty buffers', () => {
