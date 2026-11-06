@@ -153,7 +153,7 @@ async function tryFetchChunkedMp4Buffer(downloadUrl: string): Promise<{
 
   try {
     let sizeBytes = 0;
-    let chunkSizeBytes = 8 * 1024 * 1024;
+    let chunkSizeBytes = Math.floor(3.5 * 1024 * 1024);
     let ready = false;
 
     // Poll /api/prepare-download up to 6 times so slow extractions never trigger proxy gateway 500/504 timeouts

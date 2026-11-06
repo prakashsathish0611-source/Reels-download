@@ -12,6 +12,7 @@ import { ReelGrabPlayer, DownloadedVideoRecord } from './components/ReelGrabPlay
 import { DualVideoStudioPage } from './components/DualVideoStudioPage';
 import { CapCutEditorPage } from './components/CapCutEditorPage';
 import { GoogleChatPage } from './components/GoogleChatPage';
+import { VercelDeployModal } from './components/VercelDeployModal';
 import {
   Download,
   Trash2,
@@ -45,6 +46,7 @@ export default function App() {
   const [reSavingId, setReSavingId] = useState<string | null>(null);
   const [reSavedId, setReSavedId] = useState<string | null>(null);
   const [reSaveError, setReSaveError] = useState<string | null>(null);
+  const [isVercelModalOpen, setIsVercelModalOpen] = useState<boolean>(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const handleFetchVideo = async (url: string) => {
@@ -230,7 +232,21 @@ export default function App() {
               <span>Page 4 · Google Chat Hub</span>
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsVercelModalOpen(true)}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold bg-white text-slate-950 hover:bg-slate-200 transition-colors cursor-pointer whitespace-nowrap shadow-sm"
+          >
+            <span aria-hidden="true">▲</span>
+            <span>Deploy to Vercel</span>
+          </button>
         </div>
+
+        <VercelDeployModal
+          isOpen={isVercelModalOpen}
+          onClose={() => setIsVercelModalOpen(false)}
+        />
 
         {activePage === 'downloader' ? (
           <>

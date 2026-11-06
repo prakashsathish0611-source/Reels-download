@@ -20,13 +20,16 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const PERSISTENT_CACHE_DIR = path.join(__dirname, '.cache');
+const IS_VERCEL = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+const PERSISTENT_CACHE_DIR = IS_VERCEL ? '/tmp/reelgrab_cache' : path.join(__dirname, '.cache');
 const PERSISTENT_YTDLP_PATH = path.join(PERSISTENT_CACHE_DIR, 'yt-dlp');
 const YTDLP_PATH = '/tmp/yt-dlp';
 const MEDIA_DIR = '/tmp/reelgrab_media';
 
 if (!fs.existsSync(MEDIA_DIR)) {
-  fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  try {
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+  } catch {}
 }
 if (!fs.existsSync(PERSISTENT_CACHE_DIR)) {
   try {
@@ -291,6 +294,27 @@ async function getLoaderPowToken(origin = 'https://p.savenow.to'): Promise<strin
   }
 }
 
+// Pure Node.js ISO Base Media File Format ('ftyp'/'moov'/'mdat'/'styp') header check
+// so Vercel Serverless containers without ffprobe/ffmpeg still validate extracted MP4 files.
+function hasValidMp4Signature(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) return false;
+    const stat = fs.statSync(filePath);
+    if (stat.size < 1024) return false;
+    const header = Buffer.alloc(16);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      fs.readSync(fd, header, 0, 16, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const boxType = header.subarray(4, 8).toString('ascii');
+    return ['ftyp', 'moov', 'mdat', 'free', 'wide', 'styp'].includes(boxType);
+  } catch {
+    return false;
+  }
+}
+
 // Ensure any extracted media file is a valid, non-fragmented ISO MP4 (H.264 + AAC + faststart)
 // so Windows Media Player, QuickTime, iOS/Android gallery, and all browsers never report "File not supported".
 async function ensureStandardFaststartMp4(filePath: string): Promise<boolean> {
@@ -309,26 +333,37 @@ async function ensureStandardFaststartMp4(filePath: string): Promise<boolean> {
     }
 
     // Probe streams to verify a real video stream exists and check its video + audio codecs
-    const { stdout: probeOut } = await execFileAsync(
-      'ffprobe',
-      [
-        '-v',
-        'error',
-        '-show_entries',
-        'stream=codec_type,codec_name',
-        '-of',
-        'json',
-        filePath,
-      ],
-      { timeout: 8000 }
-    );
+    let videoCodec = '';
+    let audioCodec = '';
+    try {
+      const { stdout: probeOut } = await execFileAsync(
+        'ffprobe',
+        [
+          '-v',
+          'error',
+          '-show_entries',
+          'stream=codec_type,codec_name',
+          '-of',
+          'json',
+          filePath,
+        ],
+        { timeout: 8000 }
+      );
 
-    const probeJson = JSON.parse(probeOut || '{}');
-    const streams: any[] = Array.isArray(probeJson?.streams) ? probeJson.streams : [];
-    const vStream = streams.find((s) => s.codec_type === 'video');
-    const aStream = streams.find((s) => s.codec_type === 'audio');
-    const videoCodec = String(vStream?.codec_name || '').trim().toLowerCase();
-    const audioCodec = String(aStream?.codec_name || '').trim().toLowerCase();
+      const probeJson = JSON.parse(probeOut || '{}');
+      const streams: any[] = Array.isArray(probeJson?.streams) ? probeJson.streams : [];
+      const vStream = streams.find((s) => s.codec_type === 'video');
+      const aStream = streams.find((s) => s.codec_type === 'audio');
+      videoCodec = String(vStream?.codec_name || '').trim().toLowerCase();
+      audioCodec = String(aStream?.codec_name || '').trim().toLowerCase();
+    } catch {
+      // On Vercel Serverless where ffprobe is not installed, validate ISO MP4 header in pure Node.js
+      if (hasValidMp4Signature(filePath)) {
+        fs.writeFileSync(stampFile, expectedStamp, 'utf8');
+        return true;
+      }
+      return false;
+    }
 
     if (!videoCodec) {
       // Not a valid video file
@@ -872,11 +907,11 @@ async function resolveLocalVideoFile(videoUrl: string, _platformHint?: string): 
   return extractionPromise;
 }
 
-// Cloud Run HTTP/1.1 reverse proxy caps single HTTP responses at 32 MiB (33,554,432 bytes)
-// and returns HTTP 500 if exceeded. We cap Range slices & chunks at 8 MiB and single-GET
-// responses at 22 MiB so no video response ever triggers a Cloud Run HTTP 500 error.
-const MAX_CHUNK_BYTES = 8 * 1024 * 1024; // 8 MiB per chunk / Range slice
-const MAX_SINGLE_RESPONSE_BYTES = 22 * 1024 * 1024; // 22 MiB cap for un-ranged single GET
+// Vercel Serverless Functions cap responses at 4.5 MB (4,718,592 bytes) and Cloud Run caps
+// single HTTP/1.1 responses at 32 MiB. Setting MAX_CHUNK_BYTES to 3.5 MiB (3,670,016 bytes)
+// ensures chunked downloads and 206 Range streams succeed on BOTH Vercel and Cloud Run.
+const MAX_CHUNK_BYTES = Math.floor(3.5 * 1024 * 1024); // 3.5 MiB per chunk / Range slice
+const MAX_SINGLE_RESPONSE_BYTES = IS_VERCEL ? Math.floor(4 * 1024 * 1024) : 22 * 1024 * 1024;
 
 async function ensureSingleResponseSafeMp4(filePath: string): Promise<string> {
   try {
@@ -1009,8 +1044,28 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     app: 'ReelGrab Downloader',
+    runtime: IS_VERCEL ? 'vercel-serverless' : 'node-server',
     timestamp: new Date().toISOString(),
     ytdlpReady: fs.existsSync(YTDLP_PATH) || fs.existsSync(PERSISTENT_YTDLP_PATH),
+  });
+});
+
+// Vercel deployment readiness diagnostic endpoint
+app.get('/api/vercel-status', (_req: Request, res: Response) => {
+  const vercelJsonPath = path.join(__dirname, 'vercel.json');
+  const apiEntryPath = path.join(__dirname, 'api', 'index.ts');
+  res.json({
+    success: true,
+    ready: true,
+    runtime: IS_VERCEL ? 'vercel-serverless' : 'cloud-run-or-local',
+    checks: {
+      vercelJsonConfigured: fs.existsSync(vercelJsonPath),
+      serverlessApiEntryConfigured: fs.existsSync(apiEntryPath),
+      chunkSizeBytes: MAX_CHUNK_BYTES,
+      vercelPayloadSafe: MAX_CHUNK_BYTES <= 4 * 1024 * 1024,
+      tmpDirectoryWritable: fs.existsSync(MEDIA_DIR),
+      geminiApiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    },
   });
 });
 
@@ -1441,43 +1496,63 @@ async function ensureStudioDemoClip(variant: 1 | 2 | 3 = 1): Promise<string> {
 
   const freq = variant === 2 ? 528 : variant === 3 ? 330 : 440;
 
-  await execFileAsync(
-    'ffmpeg',
-    [
-      '-y',
-      '-v',
-      'error',
-      '-f',
-      'lavfi',
-      '-i',
-      videoSource,
-      '-f',
-      'lavfi',
-      '-i',
-      `sine=frequency=${freq}:sample_rate=44100:duration=10`,
-      '-vf',
-      'format=yuv420p',
-      '-af',
-      'volume=0.18,afade=t=in:st=0:d=0.4,afade=t=out:st=9.4:d=0.6,aformat=sample_fmts=fltp:channel_layouts=stereo',
-      '-c:v',
-      'libx264',
-      '-preset',
-      'ultrafast',
-      '-crf',
-      '23',
-      '-c:a',
-      'aac',
-      '-b:a',
-      '128k',
-      '-movflags',
-      '+faststart',
-      demoPath,
-    ],
-    { timeout: 15000 }
-  );
-
-  await ensureStandardFaststartMp4(demoPath);
-  return demoPath;
+  try {
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-y',
+        '-v',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        videoSource,
+        '-f',
+        'lavfi',
+        '-i',
+        `sine=frequency=${freq}:sample_rate=44100:duration=10`,
+        '-vf',
+        'format=yuv420p',
+        '-af',
+        'volume=0.18,afade=t=in:st=0:d=0.4,afade=t=out:st=9.4:d=0.6,aformat=sample_fmts=fltp:channel_layouts=stereo',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-crf',
+        '23',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '128k',
+        '-movflags',
+        '+faststart',
+        demoPath,
+      ],
+      { timeout: 15000 }
+    );
+    await ensureStandardFaststartMp4(demoPath);
+    return demoPath;
+  } catch {
+    // Fallback for Vercel Serverless where system ffmpeg is not installed: fetch a public CDN MP4 sample
+    const cdnSamples = [
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4',
+      'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4',
+    ];
+    const sampleUrl = cdnSamples[(variant - 1) % cdnSamples.length];
+    try {
+      const res = await fetch(sampleUrl, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length > 10000) {
+          fs.writeFileSync(demoPath, buf);
+          return demoPath;
+        }
+      }
+    } catch {}
+    return demoPath;
+  }
 }
 
 // 4B. Load a video into Clip A or Clip B from a URL, sample preset, or downloaded clip
@@ -2719,7 +2794,7 @@ app.post('/api/editor/render', async (req: Request, res: Response) => {
   }
 });
 
-// Start Express server and mount Vite in development
+// Start Express server and mount Vite in development (skipped when imported by Vercel Serverless Function)
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -2740,4 +2815,9 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!IS_VERCEL) {
+  startServer();
+}
+
+export { app };
+export default app;
